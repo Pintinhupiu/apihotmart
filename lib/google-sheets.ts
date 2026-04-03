@@ -21,17 +21,71 @@ const COLUMN_COUNT = SHEET_COLUMNS.length; // 12
 // ─── Autenticação ─────────────────────────────────────────────────────────────
 
 /**
+ * Normaliza a private key da Service Account para o formato PEM correto.
+ *
+ * Problemas comuns ao colar a chave na Vercel / .env:
+ *  1. \n literais (dois chars: \ + n) em vez de quebras de linha reais
+ *  2. Escaping duplo (\\n) gerado por alguns editores ou CLIs
+ *  3. Aspas envolvendo o valor inteiro ("-----BEGIN...-----")
+ *
+ * Esta função cobre os três casos.
+ */
+function normalizePrivateKey(raw: string): string {
+  let key = raw;
+
+  // Remover aspas envolventes se existirem (ex: colado com aspas no painel)
+  if (
+    (key.startsWith('"') && key.endsWith('"')) ||
+    (key.startsWith("'") && key.endsWith("'"))
+  ) {
+    key = key.slice(1, -1);
+  }
+
+  // Substituir \n literais (backslash + n) por quebras de linha reais.
+  // Cobre também \\n (escaping duplo).
+  key = key.replace(/\\n/g, "\n");
+
+  return key;
+}
+
+/**
  * Cria um cliente autenticado do Google Sheets via Service Account.
- * A chave privada pode chegar do env com \n literais — substituídos aqui.
+ *
+ * Lê a chave diretamente de process.env (não do objeto env pré-computado)
+ * para garantir que nenhuma transformação intermediária afete o valor bruto.
  */
 function getSheetsClient() {
-  const privateKey = env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY.replace(
-    /\\n/g,
-    "\n"
-  );
+  // Ler direto do process.env para evitar transformações do módulo env.ts
+  const rawEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL ?? "";
+  const rawKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY ?? "";
+
+  // Logs de diagnóstico seguros — nunca imprimem o conteúdo da chave
+  logger.info("Inicializando cliente Google Sheets", {
+    emailConfigured: rawEmail.length > 0,
+    emailPrefix: rawEmail ? rawEmail.split("@")[0].slice(0, 6) + "***" : "AUSENTE",
+    keyConfigured: rawKey.length > 0,
+    keyLength: rawKey.length,
+    keyStartsCorrectly: rawKey.includes("BEGIN PRIVATE KEY") || rawKey.includes("BEGIN RSA PRIVATE KEY"),
+  });
+
+  if (!rawEmail || !rawKey) {
+    throw new Error(
+      "[google-sheets] Credenciais da Service Account não configuradas. " +
+        "Verifique GOOGLE_SERVICE_ACCOUNT_EMAIL e GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY."
+    );
+  }
+
+  const privateKey = normalizePrivateKey(rawKey);
+
+  logger.info("Chave privada normalizada", {
+    normalizedLength: privateKey.length,
+    hasRealNewlines: privateKey.includes("\n"),
+    startsWithHeader: privateKey.trimStart().startsWith("-----BEGIN"),
+    endsWithFooter: privateKey.trimEnd().endsWith("-----"),
+  });
 
   const auth = new google.auth.JWT({
-    email: env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+    email: rawEmail,
     key: privateKey,
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
